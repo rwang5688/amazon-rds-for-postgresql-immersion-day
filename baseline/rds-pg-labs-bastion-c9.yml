@@ -1,0 +1,170 @@
+---
+## Amazon RDS PostgreSQL Labs
+## Infrastructure template without an RDS PostgreSQL instance for lab exercises
+##
+## Changelog:
+##
+## Dependencies:
+##
+## This sample code is made available under the MIT-0 license. See the LICENSE file.
+
+AWSTemplateFormatVersion: 2010-09-09
+Description: Amazon RDS PostgreSQL Labs Cloud9 stack
+
+## Parameters
+Parameters:
+  EnvType:
+    Type: String
+    Default: dev
+    AllowedValues:
+      - prod
+      - dev
+    Description: Determines if we are in EE or not
+  C9EC2InstanceType:
+    Description: EC2 instance type on which IDE runs
+    Type: String
+    Default: t3.small
+    AllowedValues:
+      - t3.nano
+      - t3.micro
+      - t3.small
+      - t3.medium
+      - t3.large
+      - m5.large
+  C9AutoHibernateTimeout:
+    Description: How many minutes idle before shutting down the IDE. Options, 30min, 1hr, 4hr, 1day, 1week, Never (0)
+    Type: Number
+    Default: 240
+    AllowedValues:
+      - 30
+      - 60
+      - 240
+      - 1440
+      - 10080
+      - 0
+  TemplateName:
+    Type: String
+    Description: Name used for different elements created.
+  PubSubnetId:
+    Type: AWS::EC2::Subnet::Id
+    Description: ID of a Public Subnet for Cloud9.
+
+## Mappings
+Mappings:
+  ClusterSettings:
+    sysbench:
+      dbDriver: pgsql
+      dbSchema: sbtpcc
+      runTime: '300'
+      numThreads: '4'
+      numTables: '8'
+      numWarehouses: '2'
+      
+## Conditions
+Conditions:
+  isInEE:
+    !Equals [ !Ref EnvType, "prod" ]
+  isNotInEE:
+    !Equals [ !Ref EnvType, "dev" ]
+
+## Resources
+Resources:
+## Create sysbench prep SSM document
+## @TODO: change to pgbench
+  ssmDocSysbenchTest:
+    Type: AWS::SSM::Document
+    Properties:
+      DocumentType: Command
+      Tags:
+        - Key: Name
+          Value: !Sub ${TemplateName}-sysbench
+      Content:
+        schemaVersion: '2.2'
+        description: SysBench Percona TPCC-LIKE Preparation
+        parameters:
+          clusterEndpoint:
+            type: String
+            description: RDS Cluster Endpoint
+          dbUser:
+            type: String
+            description: DB User
+          dbPassword:
+            type: String
+            description: DB Password
+          dbSchema:
+            type: String
+            description: DB Schema
+            default: !FindInMap [ ClusterSettings, sysbench, dbSchema ]
+          dbDriver:
+            type: String
+            description: DB Driver
+            default: !FindInMap [ ClusterSettings, sysbench, dbDriver ]
+            allowedValues: [ mysql, pgsql ]
+          runTime:
+            type: String
+            description: Test Runtime
+            default: !FindInMap [ ClusterSettings, sysbench, runTime ]
+          numThreads:
+            type: String
+            description: Threads
+            default: !FindInMap [ ClusterSettings, sysbench, numThreads ]
+          numTables:
+            type: String
+            description: Tables
+            default: !FindInMap [ ClusterSettings, sysbench, numTables ]
+          numScale:
+            type: String
+            description: Scale
+            default: !FindInMap [ ClusterSettings, sysbench, numWarehouses ]
+        mainSteps:
+        - action: aws:runShellScript
+          name: SysBenchTpccPrepare
+          inputs:
+            runCommand:
+            - 'echo "DROP SCHEMA IF EXISTS ; CREATE SCHEMA ;" | mysql -h -u -p"" && cd /home/ubuntu/sysbench-tpcc && ./tpcc.lua --mysql-host'
+        - action: aws:runShellScript
+          name: SysBenchTpccRun
+          inputs:
+            runCommand:
+            - 'cd /home/ubuntu/sysbench-tpcc && ./tpcc.lua --mysql-host= --mysql-user= --mysql-password="" --mysql-db= --threads= --tables= --scale= --time= --db-driver= run'
+
+  Cloud9InstanceEE:
+    Type: AWS::Cloud9::EnvironmentEC2
+    Condition: isInEE
+    Properties:
+      Name: !Sub ${TemplateName}-Cloud9-IDE
+      Description: !Sub ${TemplateName}-Cloud9-IDE
+      AutomaticStopTimeMinutes: !Ref C9AutoHibernateTimeout
+      SubnetId: !Ref PubSubnetId
+      InstanceType: !Ref C9EC2InstanceType
+      ImageId: amazonlinux-2-x86_64
+      OwnerArn: !Sub 'arn:aws:sts::${AWS::AccountId}:assumed-role/WSParticipantRole/Participant'
+      # Repositories:
+      #     - RepositoryUrl: !Sub 'https://git-codecommit.${AWS::Region}.amazonaws.com/v1/repos/${RepositoryName}'
+      #       PathComponent: !Sub 'codecommit/${RepositoryName}'
+      
+  Cloud9Instance:
+    Type: AWS::Cloud9::EnvironmentEC2
+    Condition: isNotInEE
+    Properties:
+      Name: !Sub ${TemplateName}-Cloud9-IDE
+      Description: !Sub ${TemplateName}-Cloud9-IDE
+      AutomaticStopTimeMinutes: !Ref C9AutoHibernateTimeout
+      SubnetId: !Ref PubSubnetId
+      InstanceType: !Ref C9EC2InstanceType
+      ImageId: amazonlinux-2-x86_64      
+      # Repositories:
+      #     - RepositoryUrl: !Sub 'https://git-codecommit.${AWS::Region}.amazonaws.com/v1/repos/${RepositoryName}'
+      #       PathComponent: !Sub 'codecommit/${RepositoryName}'
+
+
+## Outputs
+Outputs:
+  Cloud9URL:
+    Description: RDS Labs Cloud9 Environment
+    Value:
+      Fn::Join:
+      - ''
+      - - !Sub https://${AWS::Region}.console.aws.amazon.com/cloud9/ide/
+        - !If [isInEE, !Ref Cloud9InstanceEE, !Ref Cloud9Instance]
+

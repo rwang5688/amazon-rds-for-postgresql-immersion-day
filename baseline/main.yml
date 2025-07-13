@@ -1,0 +1,106 @@
+---
+## Amazon RDS PostgreSQL Labs
+## Infrastructure template for RDS/PostgreSQL Labs in Workshop Studio
+## Changelog:
+##  Who        Date        What
+##  ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+##  ggrieff    05/13/2023  Retrofitted from Event Engine Module
+##  apunnaiv   05/23/2023  Update nested stack references to WS assets bucket
+##  ggrieff    02/27/2025  Updated to include VS Code Server (future Cloud9)
+##                         replacement
+##
+## This sample code is made available under the MIT-0 license. See the LICENSE file.
+AWSTemplateFormatVersion: 2010-09-09
+Description: Amazon RDS PostgreSQL Labs Stackset
+
+## Parameters
+Parameters:
+  EnvType:
+    Type: String
+    Default: prod
+    AllowedValues:
+      - prod
+      - dev
+  CreateInstance:
+    Type: String
+    Default: "true"
+    AllowedValues:
+      - "true"
+      - "false"
+    Description: Determines if the database instance needs to be created.
+  TemplateName:
+    Type: String
+    Default: rds-pg-labs
+    Description: Name used for different elements created.
+  ParticipantRoleArn:
+    Type: String
+    Description: Workshop studio magic variable ParticipantRoleArn
+  AssetsBucketName:
+    Type: String
+    Description: Workshop studio magic variable AssetsBucketName
+  AssetsBucketPrefix:
+    Type: String
+    Description: Workshop studio magic variable AssetsBucketPrefix
+
+
+## Conditions
+Conditions:
+  isInEE:
+    !Equals [ !Ref EnvType, "prod" ]
+  isNotInEE:
+    !Equals [ !Ref EnvType, "dev" ]
+
+## Resources
+Resources:
+  rdslabsVPCStack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Join ['', [!Join [ '/', ['https://s3.amazonaws.com', !Ref AssetsBucketName, !Ref AssetsBucketPrefix]], 'rds-pg-labs-vpc.yml']]
+      #Parameters:
+        #InstanceType: t2.micro
+        #KeyName: mykey
+      Parameters:
+        TemplateName: !Ref TemplateName
+  rdslabsC9Stack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Join ['', [!Join [ '/', ['https://s3.amazonaws.com', !Ref AssetsBucketName, !Ref AssetsBucketPrefix]], 'rds-pg-labs-bastion-c9.yml']]
+      Parameters:
+          PubSubnetId: !GetAtt 'rdslabsVPCStack.Outputs.PublicSubnetA'
+          TemplateName: !Ref TemplateName
+          EnvType: !Ref EnvType
+          C9EC2InstanceType : t3.medium
+  rdslabsRDSStack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Join ['', [!Join [ '/', ['https://s3.amazonaws.com', !Ref AssetsBucketName, !Ref AssetsBucketPrefix]], 'rds-pg-labs-rds.yml']]
+      Parameters:
+          TemplateName: !Ref TemplateName
+          CreateInstance: !Ref CreateInstance
+          DBMasterUserPassword: 'Masteruser123!'
+          MainVPC: !GetAtt rdslabsVPCStack.Outputs.MainVPC
+          PrivateSubnets: !GetAtt 'rdslabsVPCStack.Outputs.PrivateSubnets'
+  rdslabsVSCodeStack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Join ['', [!Join [ '/', ['https://s3.amazonaws.com', !Ref AssetsBucketName, !Ref AssetsBucketPrefix]], 'rds-pg-labs-vscode.yml']]
+      Parameters:
+          TemplateName: !Ref TemplateName
+          PublicSubnetId: !GetAtt 'rdslabsVPCStack.Outputs.PublicSubnetA'
+          MainVPC: !GetAtt 'rdslabsVPCStack.Outputs.MainVPC' 
+Outputs:
+  LabVPC:
+    Description: RDS PostgreSQL Lab VPC
+    Value: !GetAtt rdslabsVPCStack.Outputs.MainVPC
+  Cloud9URL:
+    Description: Cloud9 URL
+    Value: !GetAtt rdslabsC9Stack.Outputs.Cloud9URL
+  DBSecGroup:
+    Description: Database Security Group
+    Value: !GetAtt rdslabsRDSStack.Outputs.dbSecGroupCluster
+  VSCodeSvrURL:
+    Description: VS Code Server URL
+    Value: !GetAtt rdslabsVSCodeStack.Outputs.URL    
+  VSCodeSvrPassword:
+    Description: VS Code Server Password
+    Value: !GetAtt rdslabsVSCodeStack.Outputs.Password   
