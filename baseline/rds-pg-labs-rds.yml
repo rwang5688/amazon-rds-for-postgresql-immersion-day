@@ -1,0 +1,357 @@
+---
+## Amazon RDS PostgreSQL Labs   
+## Infrastructure template without an RDS PostgreSQL instance for lab exercises   
+##
+## Changelog:  
+##
+## Dependencies:  
+## none
+##
+## This sample code is made available under the MIT-0 license. See the LICENSE file.
+
+AWSTemplateFormatVersion: 2010-09-09
+Description: Amazon RDS PostgreSQL Labs RDS stack
+
+##  Parameters 
+Parameters:
+  EnvType:
+    Type: String
+    Default: dev
+    AllowedValues:
+      - prod
+      - dev
+    Description: Determines if we are in EE or not
+  CreateInstance:
+    Type: String
+    Default: "false"
+    AllowedValues:
+      - "true"
+      - "false"
+    Description: Determines if the database instance needs to be created.
+  TemplateName:
+    Type: String
+    Description: Name used for different elements created.
+  PrivateSubnets:
+    Type: String
+    Description: IDs of a Private subnets for RDS PG.
+  MainVPC:
+    Type: AWS::EC2::VPC::Id
+    Description: Main VPC id
+  DBSnapshotIdentifier:
+    Description: 'Optional name or Amazon Resource Name (ARN) of the DB snapshot from which you want to restore (leave blank to create an empty database).'
+    Type: String
+    Default: ''
+  DBAllocatedStorage:
+    Description: 'The allocated storage size, specified in GB (ignored when DBSnapshotIdentifier is set, value used from snapshot).'
+    Type: Number
+    Default: 100
+    MinValue: 5
+    MaxValue: 16384
+  DBInstanceClass:
+    Description: 'The instance type of database server.'
+    Type: String
+    Default: 'db.t3.medium'
+  DBName:
+    Description: 'Name of the database (ignored when DBSnapshotIdentifier is set, value used from snapshot).'
+    Type: String
+    Default: 'pglab'
+  DBBackupRetentionPeriod:
+    Description: 'The number of days to keep snapshots of the database.'
+    Type: Number
+    MinValue: 0
+    MaxValue: 35
+    Default: 30
+  DBMasterUsername:
+    Description: 'The master user name for the DB instance (ignored when DBSnapshotIdentifier is set, value used from snapshot).'
+    Type: String
+    Default: postgres
+  DBMasterUserPassword:
+    Description: 'The master password for the DB instance (ignored when DBSnapshotIdentifier is set, value used from snapshot).'
+    Type: String
+    NoEcho: true
+    Default: ''
+  DBMultiAZ:
+    Description: 'Specifies if the database instance is deployed to multiple Availability Zones for HA.'
+    Type: String
+    Default: false
+    AllowedValues: [true, false]
+  DBOptionGroupName:
+    Description: 'Optional name of an existing DB option group.'
+    Type: String
+    Default: ''
+  DBParameterGroupName:
+    Description: 'Optional name of an existing DB parameter group.'
+    Type: String
+    Default: ''
+  SubDomainNameWithDot:
+    Description: 'Name that is used to create the DNS entry with trailing dot, e.g. ?{SubDomainNameWithDot}?{HostedZoneName}. Leave blank for naked (or apex and bare) domain. Requires ParentZoneStack parameter!'
+    Type: String
+    Default: 'postgres.'
+  PreferredBackupWindow:
+    Description: 'The daily time range in UTC during which you want to create automated backups.'
+    Type: String
+    Default: '09:54-10:24'
+  PreferredMaintenanceWindow:
+    Description: The weekly time range (in UTC) during which system maintenance can occur.
+    Type: String
+    Default: 'sat:07:00-sat:07:30'
+  EngineVersion:
+    Description: 'PostgreSQL version.'
+    Type: String
+    Default: '14.12'
+  EnableIAMDatabaseAuthentication:
+    Description: 'Enable mapping of AWS Identity and Access Management (IAM) accounts to database accounts (https://docs.aws.amazon.com/AmazonRDS/latest/AuroraUserGuide/UsingWithRDS.IAMDBAuth.html).'
+    Type: String
+    AllowedValues: ['true', 'false']
+    Default: 'true'
+  #Regions:  
+    
+## Conditions
+Conditions:
+  isInEE:
+    !Equals [ !Ref EnvType, "prod" ]
+  isNotInEE:
+    !Equals [ isInEE, false ]
+  WithInstance: !Equals [!Ref CreateInstance, "true"]
+  #HasAlertTopic: !Not [!Equals [!Ref ParentAlertStack, '']]
+  HasDBSnapshotIdentifier: !Not [!Equals [!Ref DBSnapshotIdentifier, '']]
+  HasDBOptionGroupName: !Not [!Equals [!Ref DBOptionGroupName, '']]
+  HasDBParameterGroupName: !Not [!Equals [!Ref DBParameterGroupName, '']]
+
+## Resources
+Resources:
+
+## Setup IAM 
+## Create execution role for pgvector notebook
+  pgvectorNotebookExecutionRole: 
+    Type: AWS::IAM::Role
+    Properties: 
+      RoleName: pgvector-notebook-role
+      AssumeRolePolicyDocument: 
+        Version: "2012-10-17"
+        Statement: 
+          - 
+            Effect: "Allow"
+            Principal: 
+              Service: 
+                - "sagemaker.amazonaws.com"
+                - "translate.amazonaws.com"
+            Action: 
+              - "sts:AssumeRole"
+      Path: "/"
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSageMakerFullAccess
+        - arn:aws:iam::aws:policy/SecretsManagerReadWrite
+      Policies:
+        - 
+          PolicyName: "s3_access"
+          PolicyDocument: 
+            Version: "2012-10-17"
+            Statement: 
+              - 
+                Effect: "Allow"
+                Action: 
+                  - "s3:PutBucketPolicy"
+                  - "s3:DeleteBucket"
+                Resource: "arn:aws:s3:::sagemaker-*"   
+
+## Create enhanced monitoring role
+  roleEnhancedMonitoring:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ${TemplateName}-monitor-${AWS::Region}
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Action:
+              - sts:AssumeRole
+            Principal:
+              Service:
+                - monitoring.rds.amazonaws.com
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonRDSEnhancedMonitoringRole
+
+## Create external integration role for RDS service
+  roleServiceIntegration:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ${TemplateName}-integrate-${AWS::Region}
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Action:
+              - sts:AssumeRole
+            Principal:
+              Service:
+                - rds.amazonaws.com
+      Policies:
+        - PolicyName: inline-policy
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:ListBucket
+                  - s3:GetObject
+                  - s3:GetObjectVersion
+                  - s3:AbortMultipartUpload
+                  - s3:DeleteObject
+                  - s3:ListMultipartUploadParts
+                  - s3:PutObject
+                Resource:
+                  - arn:aws:s3:::*/*
+                  - arn:aws:s3:::*
+
+
+## Create a random generated password and store it as a secret
+  secretPostgresqlMasterUser:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Description: !Sub "Master user credentials for ${AWS::StackName}-cluster"
+      GenerateSecretString:
+        SecretStringTemplate: '{"username": "postgres"}'
+        GenerateStringKey: 'password'
+        PasswordLength: 10
+        ExcludeCharacters: '"@/\$`&_,{}[]~+=|;:^*-()!'
+      Tags:
+        - Key: Name
+          Value: !Sub ${TemplateName}-dbpasswd-secret
+
+## Create secret manager attachment to RDS
+
+  SecretRDSInstanceAttachment:
+    Condition: WithInstance  
+    Type: 'AWS::SecretsManager::SecretTargetAttachment'
+    Properties:
+      SecretId: !Ref secretPostgresqlMasterUser
+      TargetId: !Ref DBInstance
+      TargetType: 'AWS::RDS::DBInstance'
+      
+      
+## Create DB security group
+  dbSecGroupCluster:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      VpcId: !Ref MainVPC
+      GroupName: !Sub ${TemplateName}-pgsql-internal
+      GroupDescription: RDS PostgreSQL Lab Database Firewall
+      Tags:
+        - Key: Name
+          Value: !Sub ${TemplateName}-pgsql-internal
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 5432
+          ToPort: 5432
+          CidrIp: 10.0.0.0/24
+          #SourceSecurityGroupId: !Ref bastionSecGroup # @Todo Ref to C9 SecGrp
+          Description: Allows PostgreSQL access from Cloud9 
+        - IpProtocol: tcp
+          FromPort: 5432
+          ToPort: 5432
+          CidrIp: 10.0.1.0/24
+          #SourceSecurityGroupId: !Ref bastionSecGroup # @Todo Ref to C9 SecGrp
+          Description: Allows PostgreSQL access from Cloud9 
+        - IpProtocol: tcp
+          FromPort: 5432
+          ToPort: 5432
+          CidrIp: 10.0.10.0/24
+          #SourceSecurityGroupId: !Ref bastionSecGroup # @Todo Ref to C9 SecGrp
+          Description: Allows PostgreSQL access from Cloud9 
+        - IpProtocol: tcp
+          FromPort: 5432
+          ToPort: 5432
+          CidrIp: 10.0.11.0/24
+          #SourceSecurityGroupId: !Ref bastionSecGroup # @Todo Ref to C9 SecGrp
+          Description: Allows PostgreSQL access from Cloud9 
+          
+          
+### Create RDS Postgres resource
+ ### based on: https://github.com/widdix/aws-cf-templates/blob/master/state/rds-postgres.yaml
+  ## Create DB subnet group
+  DBSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: !Sub ${TemplateName}-db-subnet-group
+      SubnetIds: !Split [',', !Ref PrivateSubnets] 
+      # For non-nested Stacks: #SubnetIds: !Split [',', {'Fn::ImportValue': !Sub '${ParentVPCStack}-SubnetsPrivate'}]
+      #SubnetIds: [ !Ref PrivateSubnetA, !Ref PrivateSubnetB ]
+      Tags:
+        - Key: Name
+          Value: !Sub ${TemplateName}-db-subnet-group
+
+  TLEParameterGroup:
+    Type: 'AWS::RDS::DBParameterGroup'
+    Properties:
+      Description: Custom DB parameter group for Trusted Language Extensions
+      Family: postgres14
+      Parameters:
+        shared_preload_libraries: pg_tle
+
+  DevOpsGuruResourceCollection:
+    Type: AWS::DevOpsGuru::ResourceCollection
+    Properties:
+      ResourceCollectionFilter:
+        Tags:
+          - AppBoundaryKey: "Devops-guru-precreated"
+            TagValues:
+            - "devopsguru-precreated"          
+
+  DBInstance:
+    Condition: WithInstance
+    DeletionPolicy: Snapshot # default
+    UpdateReplacePolicy: Snapshot
+    Type: 'AWS::RDS::DBInstance'
+    Properties:
+      AllocatedStorage: !If [HasDBSnapshotIdentifier, !Ref 'AWS::NoValue', !Ref DBAllocatedStorage]
+      AllowMajorVersionUpgrade: false
+      AutoMinorVersionUpgrade: true
+      #BackupRetentionPeriod: !Ref DBBackupRetentionPeriod
+      CopyTagsToSnapshot: true
+      DBInstanceClass: !Ref DBInstanceClass
+      DBInstanceIdentifier: 'rds-pg-labs'
+      DBName: !If [HasDBSnapshotIdentifier, !Ref 'AWS::NoValue', !Ref DBName]
+      DBParameterGroupName: !If [HasDBParameterGroupName, !Ref DBParameterGroupName, !Ref 'AWS::NoValue']
+      DBSnapshotIdentifier: !If [HasDBSnapshotIdentifier, !Ref DBSnapshotIdentifier, !Ref 'AWS::NoValue']
+      DBSubnetGroupName: !Ref DBSubnetGroup
+      EnableIAMDatabaseAuthentication: !Ref EnableIAMDatabaseAuthentication
+      EnablePerformanceInsights: true
+      EnableCloudwatchLogsExports: ["postgresql", "upgrade"]
+      Engine: postgres
+      EngineVersion: !If [HasDBSnapshotIdentifier, !Ref 'AWS::NoValue', !Ref EngineVersion]
+      #KmsKeyId: !If [HasKmsKeyAndNotDBSnapshotIdentifier, {'Fn::ImportValue': !Sub '${ParentKmsKeyStack}-KeyId'}, !Ref 'AWS::NoValue']
+      MasterUsername: !Join ['', ['{{resolve:secretsmanager:', !Ref secretPostgresqlMasterUser, ':SecretString:username}}' ]]
+      MasterUserPassword: !Join ['', ['{{resolve:secretsmanager:', !Ref secretPostgresqlMasterUser, ':SecretString:password}}' ]]
+      MonitoringInterval: 1
+      MonitoringRoleArn: !GetAtt 'roleEnhancedMonitoring.Arn'
+      MultiAZ: !Ref DBMultiAZ
+      DBParameterGroupName: !Ref TLEParameterGroup
+      PreferredBackupWindow: !Ref PreferredBackupWindow
+      PreferredMaintenanceWindow: !Ref PreferredMaintenanceWindow
+      StorageType: io1
+      Iops: 1000
+      StorageEncrypted: !If [HasDBSnapshotIdentifier, !Ref 'AWS::NoValue', true]
+      VPCSecurityGroups:
+      - !Ref dbSecGroupCluster
+      Tags:
+        - Key: Devops-guru-precreated
+          Value: devopsguru-precreated
+      
+## Outputs
+Outputs:
+  dbSecGroupCluster:
+    Description: Database Security Group
+    Value: !Ref dbSecGroupCluster
+  RDSPGInstanceName:
+    Condition: WithInstance
+    Description: 'The name of the database instance.'
+    Value: !Ref DBInstance
+    Export:
+      Name: !Sub '${AWS::StackName}-InstanceName'
+  RDSPGDNSName:
+    Condition: WithInstance
+    Description: 'The connection endpoint for the database.'
+    Value: !GetAtt 'DBInstance.Endpoint.Address'
+    Export:
+      Name: !Sub '${AWS::StackName}-DNSName'
