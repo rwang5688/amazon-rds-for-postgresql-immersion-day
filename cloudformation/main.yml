@@ -61,15 +61,15 @@ Resources:
         #KeyName: mykey
       Parameters:
         TemplateName: !Ref TemplateName
-  rdslabsC9Stack:
-    Type: AWS::CloudFormation::Stack
-    Properties:
-      TemplateURL: !Join ['', [!Join [ '/', ['https://s3.amazonaws.com', !Ref AssetsBucketName, !Ref AssetsBucketPrefix]], 'rds-pg-labs-bastion-c9.yml']]
-      Parameters:
-          PubSubnetId: !GetAtt 'rdslabsVPCStack.Outputs.PublicSubnetA'
-          TemplateName: !Ref TemplateName
-          EnvType: !Ref EnvType
-          C9EC2InstanceType : t3.medium
+  #rdslabsC9Stack:
+  #  Type: AWS::CloudFormation::Stack
+  #  Properties:
+  #    TemplateURL: !Join ['', [!Join [ '/', ['https://s3.amazonaws.com', !Ref AssetsBucketName, !Ref AssetsBucketPrefix]], 'rds-pg-labs-bastion-c9.yml']]
+  #    Parameters:
+  #        PubSubnetId: !GetAtt 'rdslabsVPCStack.Outputs.PublicSubnetA'
+  #        TemplateName: !Ref TemplateName
+  #        EnvType: !Ref EnvType
+  #        C9EC2InstanceType : t3.medium
   rdslabsRDSStack:
     Type: AWS::CloudFormation::Stack
     Properties:
@@ -92,9 +92,9 @@ Outputs:
   LabVPC:
     Description: RDS PostgreSQL Lab VPC
     Value: !GetAtt rdslabsVPCStack.Outputs.MainVPC
-  Cloud9URL:
-    Description: Cloud9 URL
-    Value: !GetAtt rdslabsC9Stack.Outputs.Cloud9URL
+  #Cloud9URL:
+  #  Description: Cloud9 URL
+  #  Value: !GetAtt rdslabsC9Stack.Outputs.Cloud9URL
   DBSecGroup:
     Description: Database Security Group
     Value: !GetAtt rdslabsRDSStack.Outputs.dbSecGroupCluster
